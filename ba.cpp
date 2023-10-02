@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include <random>
+#include <string>
 
 #include <g2o/core/sparse_block_matrix.h>
 #include <g2o/core/block_solver.h>
@@ -70,7 +71,12 @@ void generatePoints(Eigen::MatrixXf& pixPoints1, Eigen::MatrixXf& pixPoints2,
     // std::cout<<"pixPoints2:\n"<<pixPoints2<<std::endl;
 }
 
-int main() {
+int main(int argc, char** argv) {
+	int its = 100;
+	if(argc>1){
+		std::string its2(argv[1]);
+		its = std::stoi(its2);
+	}
     Eigen::MatrixXf pixPoints1, pixPoints2;
     Eigen::MatrixXf mapPoints;
     generatePoints(pixPoints1, pixPoints2, mapPoints);
@@ -149,12 +155,12 @@ int main() {
     optimizer.setVerbose(true);
     optimizer.initializeOptimization(0);
     optimizer.computeActiveErrors();
-    std::cout<<"optimizer.chi2(): "<<optimizer.chi2()<<std::endl;
-    optimizer.optimize(100);
+    std::cout<<"initial optimizer.chi2(): "<<optimizer.chi2()<<std::endl;
+    optimizer.optimize(its);
 
     VertexPose* Tbw_recovery = static_cast<VertexPose*>(optimizer.vertex(0));
 	Sophus::SE3d Twb_final = Tbw_recovery->estimate().T.inverse();
-	std::cout<<"\n========\nCompare euler angles and translation:\n";
+	std::cout<<"\n========\nCompare euler angles and translation after optimizating "<<its<<" times:\n";
 	std::cout<<"Twb_true: "<<"["<<Twb.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
 			Twb.translation().transpose()<<"]\n";
 
