@@ -72,11 +72,11 @@ void generatePoints(Eigen::MatrixXf& pixPoints1, Eigen::MatrixXf& pixPoints2,
 }
 
 int main(int argc, char** argv) {
-	int its = 100;
-	if(argc>1){
-		std::string its2(argv[1]);
-		its = std::stoi(its2);
-	}
+    int its = 100;
+    if(argc>1){
+        std::string its2(argv[1]);
+        its = std::stoi(its2);
+    }
     Eigen::MatrixXf pixPoints1, pixPoints2;
     Eigen::MatrixXf mapPoints;
     generatePoints(pixPoints1, pixPoints2, mapPoints);
@@ -89,8 +89,8 @@ int main(int argc, char** argv) {
     linearSolver = new g2o::LinearSolverDense<g2o::BlockSolver_6_3::PoseMatrixType>();
     g2o::BlockSolver_6_3 *solver_ptr = new g2o::BlockSolver_6_3(linearSolver);
     g2o::OptimizationAlgorithmLevenberg *solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
-	solver->setUserLambdaInit(1.);
-	// g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton(solver_ptr);
+    solver->setUserLambdaInit(1.);
+    // g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton(solver_ptr);
     optimizer.setAlgorithm(solver);
 
     const double roll2 = 0. * kDegree2Rad; // 5
@@ -159,16 +159,16 @@ int main(int argc, char** argv) {
     optimizer.optimize(its);
 
     VertexPose* Tbw_recovery = static_cast<VertexPose*>(optimizer.vertex(0));
-	Sophus::SE3d Twb_final = Tbw_recovery->estimate().T.inverse();
-	std::cout<<"\n========\nCompare euler angles and translation after optimizating "<<its<<" times:\n";
-	std::cout<<"Twb_true: "<<"["<<Twb.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
-			Twb.translation().transpose()<<"]\n";
+    Sophus::SE3d Twb_final = Tbw_recovery->estimate().T.inverse();
+    std::cout<<"\n========\nCompare euler angles and translation after optimizating "<<its<<" times:\n";
+    std::cout<<"Twb_true: "<<"["<<Twb.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
+            Twb.translation().transpose()<<"]\n";
 
-	std::cout<<"Twb_before opt:"<<"["<<Twb2.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
-			Twb2.translation().transpose()<<"]\n";
+    std::cout<<"Twb_before opt:"<<"["<<Twb2.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
+            Twb2.translation().transpose()<<"]\n";
     
-	std::cout<<"Twb_after opt:"<<"["<<Twb_final.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
-			Twb_final.translation().transpose()<<"]\n";
+    std::cout<<"Twb_after opt:"<<"["<<Twb_final.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
+            Twb_final.translation().transpose()<<"]\n";
     
     return 0;
 }

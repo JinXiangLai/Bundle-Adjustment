@@ -43,7 +43,7 @@ include_directories(
     ${PROJECT_SOURCE_DIR}
     ${EIGEN3_INCLUDE_DIR}
     # ${g2o_INCLUDE_DIR}
-	${g2oInclude}
+    ${g2oInclude}
     ${SOPHUS_INCLUDE_DIR}
 )
 
