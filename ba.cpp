@@ -32,9 +32,18 @@ const Eigen::Vector3d twb(-0.5, -0.2, -2.0);
 const Sophus::SE3d Twb(Qwb, twb);
 const Sophus::SE3d Tbw(Twb.inverse());
 
+#if USE_INVERSE_DEPTH
+    const Eigen::Quaterniond Qwc = Eigen::AngleAxisd(yaw+5, Eigen::Vector3d::UnitZ()) * \
+                            Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) * \ 
+                            Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+    const Eigen::Vector3d twc(-0.8, -0.2, -3.0);
+    const Sophus::SE3d Twc(Qwc, twc);
+    const Sophus::SE3d Tcw(Twc.inverse());
+#endif
+
 // 生成匹配像素点
 void generatePoints(Eigen::MatrixXf& pixPoints1, Eigen::MatrixXf& pixPoints2,
-                    Eigen::MatrixXf& mapPoints)
+                    Eigen::MatrixXf& mapPoints, Eigen::MatrixXf& pixPoints3)
 {
     //选取相机1的n个像素点
     CameraModel cam;
@@ -69,6 +78,18 @@ void generatePoints(Eigen::MatrixXf& pixPoints1, Eigen::MatrixXf& pixPoints2,
         pixPoints2.col(i) = pix.cast<float>(); // .cast<int>();
     }
     // std::cout<<"pixPoints2:\n"<<pixPoints2<<std::endl;
+#if USE_INVERSE_DEPTH
+    pixPoints3.resize(pixPoints1.rows(), pixPoints1.cols());
+    for(int i=0; i<mapPoints.cols(); ++i){
+        const Eigen::Vector3d& mp = mapPoints.col(i).cast<double>();
+        Eigen::Vector3d pc = Tcw * mp;
+        // std::cout<<"pc: "<<pc.transpose()<<std::endl;
+        Eigen::Vector3d pix = cam.K.cast<double>() * pc;
+        pix /= pix[2];
+        pixPoints3.col(i) = pix.cast<float>(); // .cast<int>();
+    }
+    // std::cout<<"pixPoints2:\n"<<pixPoints2<<std::endl;
+#endif
 }
 
 int main(int argc, char** argv) {
@@ -77,9 +98,9 @@ int main(int argc, char** argv) {
         std::string its2(argv[1]);
         its = std::stoi(its2);
     }
-    Eigen::MatrixXf pixPoints1, pixPoints2;
+    Eigen::MatrixXf pixPoints1, pixPoints2, pixPoints3;
     Eigen::MatrixXf mapPoints;
-    generatePoints(pixPoints1, pixPoints2, mapPoints);
+    generatePoints(pixPoints1, pixPoints2, mapPoints, pixPoints3);
     CameraModel cam;
 
     // 优化Tbw先
@@ -99,7 +120,7 @@ int main(int argc, char** argv) {
     const Eigen::Quaterniond Qwb2 = Eigen::AngleAxisd(yaw2, Eigen::Vector3d::UnitZ()) * \
                             Eigen::AngleAxisd(pitch2, Eigen::Vector3d::UnitY()) * \ 
                             Eigen::AngleAxisd(roll2, Eigen::Vector3d::UnitX());
-    const Eigen::Vector3d twb2(-0.2, -0.1, -1.5); // (-0.5, -0.2, -2.0)
+    const Eigen::Vector3d twb2(-0.4, -0.15, -1.5); // (-0.5, -0.2, -2.0)
     const Sophus::SE3d Twb2(Qwb2, twb2);
     const Sophus::SE3d Tbw2(Twb2.inverse());
 
@@ -120,29 +141,47 @@ int main(int argc, char** argv) {
     T_aw->setFixed(true);
     optimizer.addVertex(T_aw);
 
+#if USE_INVERSE_DEPTH
+    VertexPose* T_cw = new VertexPose(Tcw);
+    T_cw->setId(2);
+    // T_cw 加入的约束可以约束地图点的尺度
+    // 如果只有T_aw，T_bw约束，那么尺度是不可观的
+    T_cw->setFixed(false);
+    optimizer.addVertex(T_cw);
+#endif
+
     std::default_random_engine generator;
-    std::normal_distribution<double> distribution(0., 0.1);
+    std::normal_distribution<double> distribution(0., 0.01);
     
     for(int i=0; i<mapPoints.cols(); ++i){
-		double noise = distribution(generator);
+        double noise = distribution(generator);
 #if USE_INVERSE_DEPTH
-		VertexInverseDepthPoint* p = new VertexInverseDepthPoint(1.0/(1.0 + noise), pixPoints1.col(i));
-		p->setId(i+2);
+        VertexInverseDepthPoint* p = new VertexInverseDepthPoint(1.0, pixPoints1.col(i));
+        p->setId(i+3);
         p->setFixed(false);
         optimizer.addVertex(p);
 
-		const Eigen::Vector2d obs = pixPoints2.col(i).head(2).cast<double>();
+        const Eigen::Vector2d obs = pixPoints2.col(i).head(2).cast<double>();
 
-		EdgeInverseDepthPoint *e = new EdgeInverseDepthPoint(obs, &cam);
-		e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(1)));
-		e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(i+2)));
-		e->setVertex(2, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
-		e->setInformation(Eigen::Matrix2d::Identity());
+        EdgeInverseDepthPoint *e = new EdgeInverseDepthPoint(obs, &cam);
+        e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(1)));
+        e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(i+3)));
+        e->setVertex(2, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
+        e->setInformation(Eigen::Matrix2d::Identity());
         optimizer.addEdge(e);
+
+        const Eigen::Vector2d obs2 = pixPoints3.col(i).head(2).cast<double>();
+
+		EdgeInverseDepthPoint *e2 = new EdgeInverseDepthPoint(obs2, &cam);
+		e2->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(1)));
+		e2->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(i+3)));
+		e2->setVertex(2, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(2)));
+		e2->setInformation(Eigen::Matrix2d::Identity());
+        optimizer.addEdge(e2);
 #else
         Eigen::Vector3d vecNoise(noise, noise, noise);
         
-		const Eigen::Vector3d pw = mapPoints.col(i).cast<double>() + vecNoise;
+        const Eigen::Vector3d pw = mapPoints.col(i).cast<double>() + vecNoise;
         // const Eigen::Vector3d pw = mapPoints.col(i).cast<double>();
         VertexPointXYZ* p = new VertexPointXYZ(pw);
         p->setId(i+2);
