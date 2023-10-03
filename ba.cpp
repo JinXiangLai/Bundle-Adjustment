@@ -14,7 +14,7 @@
 #include "g2oTypes.hpp"
 
 typedef Eigen::Matrix<double, 3, 3>  Matrix3d;
-
+#define USE_INVERSE_DEPTH 1
 
 const double kPi = 3.1415926;
 const double kDegree2Rad = kPi / 180;
@@ -121,13 +121,29 @@ int main(int argc, char** argv) {
     optimizer.addVertex(T_aw);
 
     std::default_random_engine generator;
-    std::normal_distribution<double> distribution(0., 0.01);
+    std::normal_distribution<double> distribution(0., 0.1);
     
     for(int i=0; i<mapPoints.cols(); ++i){
-        Eigen::Vector3d noise(distribution(generator), distribution(generator), distribution(generator));
-        //const Eigen::Vector3d pw = mapPoints.col(i).cast<double>() + noise;
+		double noise = distribution(generator);
+#if USE_INVERSE_DEPTH
+		VertexInverseDepthPoint* p = new VertexInverseDepthPoint(1.0/(1.0 + noise), pixPoints1.col(i));
+		p->setId(i+2);
+        p->setFixed(false);
+        optimizer.addVertex(p);
+
+		const Eigen::Vector2d obs = pixPoints2.col(i).head(2).cast<double>();
+
+		EdgeInverseDepthPoint *e = new EdgeInverseDepthPoint(obs, &cam);
+		e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(1)));
+		e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(i+2)));
+		e->setVertex(2, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
+		e->setInformation(Eigen::Matrix2d::Identity());
+        optimizer.addEdge(e);
+#else
+        Eigen::Vector3d vecNoise(noise, noise, noise);
         
-        const Eigen::Vector3d pw = mapPoints.col(i).cast<double>();
+		const Eigen::Vector3d pw = mapPoints.col(i).cast<double>() + vecNoise;
+        // const Eigen::Vector3d pw = mapPoints.col(i).cast<double>();
         VertexPointXYZ* p = new VertexPointXYZ(pw);
         p->setId(i+2);
         p->setFixed(false);
@@ -149,6 +165,7 @@ int main(int argc, char** argv) {
         e1->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(i+2)));
         e1->setInformation(Eigen::Matrix2d::Identity());
         optimizer.addEdge(e1);
+#endif
     }
 
     // Step 3: 执行优化
