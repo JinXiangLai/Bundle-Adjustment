@@ -2,9 +2,10 @@
 
 #include <sophus/se3.hpp>
 
-#include "g2o/core/sparse_optimizer.h"
+#include <g2o/core/sparse_optimizer.h>
 #include <g2o/core/base_binary_edge.h>
 #include <g2o/core/base_vertex.h>
+#include <g2o/core/base_multi_edge.h>
 
 template <typename T = double>
 Eigen::Matrix<T, 3, 3> NormalizeRotation(const Eigen::Matrix<T, 3, 3> &R)
@@ -217,4 +218,153 @@ public:
 
     Eigen::Vector3d pc1, pc2;
     Eigen::Vector3d pix;
+};
+
+// 定义详细的节点参数以及Update过程
+class InverseDepthPoint{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    InverseDepthPoint() {}
+    InverseDepthPoint(double _rho, int u, int v) : rho(_rho){
+        uv<< u, v, 1;
+    }
+    InverseDepthPoint(double _rho, const Eigen::Vector3f& _uv) : rho(_rho){
+        uv = _uv.cast<double>();
+    }
+    void Update(const double* up){
+        rho += up[0];
+    }
+    double rho; // 1/Zc
+    Eigen::Vector3d uv; // host frame 的像素坐标,非优化变量
+
+};
+
+// 将节点封装成g2o::Vertex类型即可
+class VertexInverseDepthPoint : public g2o::BaseVertex<1, InverseDepthPoint>{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    VertexInverseDepthPoint() {}
+    VertexInverseDepthPoint(double _rho, int u, int v){
+        InverseDepthPoint p = InverseDepthPoint(_rho, u, v);
+        setEstimate(p);
+    }
+    VertexInverseDepthPoint(double _rho, const Eigen::Vector3f& uv){
+        InverseDepthPoint p = InverseDepthPoint(_rho, uv);
+        setEstimate(p);
+    }
+
+    virtual bool read(std::istream &is){return false;}
+    virtual bool write(std::ostream &os)const {return false;}
+    virtual void setToOriginImpl()
+    {
+    }
+
+    virtual void oplusImpl(const double *update_)
+    {
+        _estimate.Update(update_);
+        updateCache();
+    }
+};
+
+// 完成观测值设置以及误差计算和雅可比函数
+class EdgeInverseDepthPoint : public g2o::BaseMultiEdge<2, Eigen::Vector2d>{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    EdgeInverseDepthPoint() {
+        resize(3);
+    }
+    EdgeInverseDepthPoint(const Eigen::Vector2d& _obs, CameraModel* _cam, const double& _w = 1.0){
+        resize(3);
+        cam = _cam;
+        setMeasurement(_obs);
+        setInformation(Eigen::Matrix2d::Identity() * _w);
+    }
+
+    virtual bool read(std::istream &is) { return false; }
+    virtual bool write(std::ostream &os) const { return false; }
+
+    // 计算重投影误差
+    void computeError()
+    {
+        const VertexPose* Tfw = static_cast<VertexPose*>(_vertices[0]); // host frame
+        const VertexInverseDepthPoint* pf = static_cast<VertexInverseDepthPoint*>(_vertices[1]);
+        const VertexPose* Tcw = static_cast<VertexPose*>(_vertices[2]); // current frame
+
+        const Sophus::SE3d T_fw = Tfw->estimate().T;
+        const Eigen::Vector2d obs(_measurement);
+        const Eigen::Matrix3d K_invd = cam->K_inv.cast<double>();
+        const Eigen::Matrix3d Kd = cam->K.cast<double>();        
+
+        pc_f = 1./pf->estimate().rho * K_invd * pf->estimate().uv;
+        pw = T_fw.rotationMatrix().transpose() * (pc_f - T_fw.translation());
+        pc1 = Tcw->estimate().T * pw;
+        pc2 = Kd * pc1;
+        pix = (pc2/pc2[2]);
+
+        _error = pix.head(2) - obs;
+        // std::cout<<"e: "<<_error.transpose()<<std::endl;       
+    }
+
+    virtual void linearizeOplus(){
+        const VertexPose* Tfw = static_cast<VertexPose*>(_vertices[0]); // host frame
+        const VertexInverseDepthPoint* pf = static_cast<VertexInverseDepthPoint*>(_vertices[1]);
+        const VertexPose* Tcw = static_cast<VertexPose*>(_vertices[2]); // current frame
+
+        const Sophus::SE3d T_fw = Tfw->estimate().T.inverse();
+        const Eigen::Matrix3d Rfw = T_fw.rotationMatrix();
+        const Eigen::Vector3d tfw = T_fw.translation();
+        const Eigen::Matrix3d Rcw = Tcw->estimate().T.rotationMatrix();
+        const Eigen::Vector3d tcw = Tcw->estimate().T.translation();
+
+        // pix w.r.t pc2
+        Eigen::Matrix<double, 2, 3> J_r_pc2;
+        J_r_pc2 << 1/pc2[2], 0, -pc2[0]/(pc2[2]*pc2[2]),
+                    0, 1/pc2[2], -pc2[1]/(pc2[2]*pc2[2]);
+        // pc2 w.r.t pc1
+        Eigen::Matrix3d J_pc2_pc1 = cam->K.cast<double>();
+        // pc1 w.r.t pw
+        Eigen::Matrix3d J_pc1_pw = Rcw;
+
+        for(int i=0; i<3; ++i){
+            _jacobianOplus[i].setZero();
+        }
+
+        // Jacobian of residual w.r.t pw
+        Eigen::Matrix<double, 2, 3> J_r_pw = J_r_pc2 * J_pc2_pc1 * J_pc1_pw;
+
+        // Jacobian of residual w.r.t Tfw
+        // pw w.r.t Rfw
+        Eigen::Vector3d pf_minus_tfw = pc_f - tfw;
+        Eigen::Matrix3d J_pw_Rfw = Rfw.transpose() * Sophus::SO3d::hat(pf_minus_tfw);
+        // pw w.r.t tfw
+        Eigen::Matrix3d J_pw_tfw = -Rfw.transpose();
+        
+        Eigen::Matrix<double, 3, 6> J_pw_Tfw;
+        J_pw_Tfw.block<3, 3>(0, 0) = J_pw_Rfw;
+        J_pw_Tfw.block<3, 3>(0, 3) = J_pw_tfw;
+        _jacobianOplus[0] = J_r_pw * J_pw_Tfw;
+
+        // Jacobian of residual w.r.t rho
+        // pw w.r.t pc_f
+        Eigen::Matrix3d pw_pcf = Rfw.transpose();
+        // pc_f w.r.t rho
+        Eigen::Vector3d pcf_norm = cam->K_inv.cast<double>() * pf->estimate().uv;
+        double rho2 = pf->estimate().rho * pf->estimate().rho;
+        Eigen::Vector3d pcf_rho( -pcf_norm[0]/rho2, -pcf_norm[1]/rho2, -1/rho2 );
+        _jacobianOplus[1] = J_r_pw * pw_pcf * pcf_rho;
+
+        // Jacobian of residual w.r.t Tcw
+        // pc1 w.r.t Rcw
+        Eigen::Matrix3d J_pc1_Rcw = -Sophus::SO3d::hat(Rcw * pw);
+        Eigen::Matrix3d J_pc1_tcw = Eigen::Matrix3d::Identity();
+        
+        Eigen::Matrix<double, 3, 6> J_pc1_Tcw;
+        J_pc1_Tcw.block<3, 3>(0, 0) = J_pc1_Rcw;
+        J_pc1_Tcw.block<3, 3>(0, 3) = J_pc1_tcw;
+        _jacobianOplus[2] = J_r_pc2 * J_pc2_pc1 * J_pc1_Tcw;
+    }
+
+    Eigen::Vector3d pc_f, pw, pc1, pc2, pix;
+
+    CameraModel* cam{nullptr};
 };
