@@ -36,7 +36,7 @@ const Sophus::SE3d Tbw(Twb.inverse());
     const Eigen::Quaterniond Qwc = Eigen::AngleAxisd(yaw+5, Eigen::Vector3d::UnitZ()) * \
                             Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) * \ 
                             Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
-    const Eigen::Vector3d twc(-0.8, -0.2, -3.0);
+    const Eigen::Vector3d twc(-0.8, -0.8, -2.4);
     const Sophus::SE3d Twc(Qwc, twc);
     const Sophus::SE3d Tcw(Twc.inverse());
 #endif
@@ -207,6 +207,15 @@ int main(int argc, char** argv) {
 #endif
     }
 
+	// 添加相对位姿约束以保证尺度一致性
+	Sophus::SE3d Tab = Sophus::SE3d() * Twb;
+	Tab.translation() += Eigen::Vector3d(0.01, 0.03, 0.1);
+	PoseConstraint* e = new PoseConstraint(Tab);
+	e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(1)));
+    e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
+    e->setInformation(Matrix6d::Identity());
+    optimizer.addEdge(e);
+
     // Step 3: 执行优化
     optimizer.setVerbose(true);
     optimizer.initializeOptimization(0);
@@ -225,6 +234,15 @@ int main(int argc, char** argv) {
     
     std::cout<<"Twb_after opt:"<<"["<<Twb_final.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
             Twb_final.translation().transpose()<<"]\n";
+
+#if USE_INVERSE_DEPTH
+	Sophus::SE3d Twc2 = static_cast<VertexPose*>(optimizer.vertex(2))->estimate().T.inverse();
+	std::cout<<"Twc_true: "<<"["<<Twc.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
+            Twc.translation().transpose()<<"]\n";
+    
+    std::cout<<"Twc_after opt:"<<"["<<Twc2.rotationMatrix().eulerAngles(2, 1, 0).transpose()*kRad2Degree<<"], ["<<
+            Twc2.translation().transpose()<<"]\n";
+#endif
     
     return 0;
 }

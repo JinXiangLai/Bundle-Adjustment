@@ -7,6 +7,9 @@
 #include <g2o/core/base_vertex.h>
 #include <g2o/core/base_multi_edge.h>
 
+typedef Eigen::Matrix<double, 6, 1> Vector6d;
+typedef Eigen::Matrix<double, 6, 6> Matrix6d;
+
 template <typename T = double>
 Eigen::Matrix<T, 3, 3> NormalizeRotation(const Eigen::Matrix<T, 3, 3> &R)
 {
@@ -30,6 +33,62 @@ Eigen::Matrix3d ExpSO3(const double x, const double y, const double z)
         Eigen::Matrix3d res =Eigen::Matrix3d::Identity() + W*sin(d)/d + W*W*(1.0-cos(d))/d2;
         return NormalizeRotation(res);
     }
+}
+
+Eigen::Vector3d LogSO3(const Eigen::Matrix3d &R)
+{
+    const double tr = R(0,0)+R(1,1)+R(2,2);
+    Eigen::Vector3d w;
+    w << (R(2,1)-R(1,2))/2, (R(0,2)-R(2,0))/2, (R(1,0)-R(0,1))/2;
+    const double costheta = (tr-1.0)*0.5f;
+    if(costheta>1 || costheta<-1)
+        return w;
+    const double theta = acos(costheta);
+    const double s = sin(theta);
+    if(fabs(s)<1e-5)
+        return w;
+    else
+        return theta*w/s;
+}
+
+// Θ很小时，近似参考：https://blog.csdn.net/wang_yq0728/article/details/121894502
+// 其中 Jr(ϕ) = Jl(-ϕ)
+// Jr(ϕ).inv = Jl(-ϕ).inv
+Eigen::Matrix3d RightJacobianSO3(const double x, const double y, const double z)
+{
+    const double d2 = x*x+y*y+z*z;
+    const double d = sqrt(d2);
+
+    Eigen::Matrix3d W;
+    W << 0.0, -z, y,z, 0.0, -x,-y,  x, 0.0;
+    if(d<1e-5)
+    {
+        return Eigen::Matrix3d::Identity();
+    }
+    else
+    {
+        return Eigen::Matrix3d::Identity() - W*(1.0-cos(d))/d2 + W*W*(d-sin(d))/(d2*d);
+    }
+}
+
+Eigen::Matrix3d InverseRightJacobianSO3(const double x, const double y, const double z)
+{
+    // 计算旋转角
+    const double d2 = x*x+y*y+z*z;
+    const double d = sqrt(d2);
+
+    // 旋转向量的反对称矩阵，即 W=Θ*a
+    Eigen::Matrix3d W;
+    W << 0.0, -z, y,z, 0.0, -x,-y,  x, 0.0;
+    if(d<1e-5)
+        return Eigen::Matrix3d::Identity();
+    else
+        // W*W/d2 = a * a.T
+        return Eigen::Matrix3d::Identity() + W/2 + W*W*(1.0/d2 - (1.0+cos(d))/(2.0*d*sin(d)));
+}
+
+Eigen::Matrix3d InverseRightJacobianSO3(const Eigen::Vector3d v){
+    return InverseRightJacobianSO3(v[0], v[1], v[2]);
 }
 
 struct CameraModel {
@@ -118,8 +177,8 @@ public:
     void Update(const double *up){
         Eigen::Vector3d r(up[0], up[1], up[2]);
         Eigen::Vector3d t(up[3], up[4], up[5]);
-        Eigen::Matrix3d delta_r = Eigen::AngleAxisd(r.norm(), r.normalized()).toRotationMatrix();
-        // Eigen::Matrix3d delta_r = ExpSO3(r[0], r[1], r[2]);
+        // Eigen::Matrix3d delta_r = Eigen::AngleAxisd(r.norm(), r.normalized()).toRotationMatrix();
+        Eigen::Matrix3d delta_r = ExpSO3(r[0], r[1], r[2]);
 
         // 这样赋值是错误的，rotationMatrix()函数是const修饰，返回临时变量
         // T.rotationMatrix() = delta_r * T.rotationMatrix();
@@ -367,4 +426,85 @@ public:
     Eigen::Vector3d pc_f, pw, pc1, pc2, pix;
 
     CameraModel* cam{nullptr};
+};
+
+class PoseConstraint : public g2o::BaseBinaryEdge<6, Sophus::SE3d, VertexPose, VertexPose>{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    PoseConstraint(){}
+    PoseConstraint(const Sophus::SE3d& _Tab){
+        setMeasurement(_Tab);
+        setInformation(Eigen::Matrix<double, 6, 6>::Identity());
+    }
+
+    virtual bool read(std::istream &is) { return false; }
+    virtual bool write(std::ostream &os) const { return false; }
+
+    void computeError(){
+        const VertexPose* Taw = static_cast<VertexPose*>(_vertices[0]);
+        const VertexPose* Tbw = static_cast<VertexPose*>(_vertices[1]);
+        const Eigen::Matrix3d& Raw = Taw->estimate().T.rotationMatrix();
+        const Eigen::Vector3d& taw = Taw->estimate().T.translation();
+        const Eigen::Matrix3d& Rbw = Tbw->estimate().T.rotationMatrix();
+        const Eigen::Vector3d& tbw = Tbw->estimate().T.translation();
+
+        const Eigen::Matrix3d& Rab = _measurement.rotationMatrix();
+        const Eigen::Vector3d& tab = _measurement.translation();
+
+        delta_R =  LogSO3(Rab.transpose() * Raw * Rbw.transpose());
+        Eigen::Vector3d delta_t =  tab + Raw*Rbw.transpose()*tbw - taw;
+        _error << delta_R, delta_t;
+    
+    }
+
+    virtual void linearizeOplus(){
+        const VertexPose* Taw = static_cast<VertexPose*>(_vertices[0]);
+        const VertexPose* Tbw = static_cast<VertexPose*>(_vertices[1]);
+        const Eigen::Matrix3d& Raw = Taw->estimate().T.rotationMatrix();
+        const Eigen::Vector3d& taw = Taw->estimate().T.translation();
+        const Eigen::Matrix3d& Rbw = Tbw->estimate().T.rotationMatrix();
+        const Eigen::Vector3d& tbw = Tbw->estimate().T.translation();
+
+        const Eigen::Matrix3d& Rab = _measurement.rotationMatrix();
+        const Eigen::Vector3d& tab = _measurement.translation();
+
+        // inverse left Jacobian of deltaR
+        // Jr(ϕ).inv = Jl(-ϕ).inv
+        Eigen::Matrix3d invJl = InverseRightJacobianSO3(-delta_R);
+        Eigen::Matrix3d invJr = InverseRightJacobianSO3(delta_R);
+
+        // Jacobian delta_R w.r.t Raw(左扰动)
+        // 使用伴随矩阵以及BCH近似两个性质
+        Eigen::Matrix3d J_deltaR_Raw = invJl * Rab;
+
+        // Jacobian delta_R w.r.t Rbw
+        Eigen::Matrix3d J_deltaR_Rbw = -invJr; 
+        // Jacobian delta_R w.r.t taw(tbw) is 0
+
+        // Jacobian delta_t w.r.t Raw
+        Eigen::Matrix3d J_deltat_Raw = -Sophus::SO3d::hat(Raw * Rbw.transpose() * tbw);
+
+        // Jacobian delta_t w.r.t Rbw
+        Eigen::Matrix3d J_deltat_Rbw = Raw * Rbw.transpose() * Sophus::SO3d::hat(tbw);
+
+        // Jacobian deltat w.r.t taw
+        Eigen::Matrix3d J_deltat_taw = -Eigen::Matrix3d::Identity();
+
+        // Jacobian deltat w.r.t tbw
+        Eigen::Matrix3d J_deltat_tbw = Raw*Rbw.transpose();
+
+        _jacobianOplusXi.setZero();
+        _jacobianOplusXj.setZero();
+
+        _jacobianOplusXi.block<3, 3>(0, 0) = J_deltaR_Raw;
+        _jacobianOplusXi.block<3, 3>(3, 0) = J_deltat_Raw;
+        _jacobianOplusXi.block<3, 3>(3, 3) = J_deltat_taw;
+
+        _jacobianOplusXj.block<3, 3>(0, 0) = J_deltaR_Rbw;
+        _jacobianOplusXj.block<3, 3>(3, 0) = J_deltat_Rbw;
+        _jacobianOplusXj.block<3, 3>(3, 3) = J_deltat_tbw;
+
+    }
+    Eigen::Vector3d delta_R;
+
 };
