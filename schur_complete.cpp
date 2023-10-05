@@ -62,13 +62,23 @@ int main(){
     
     // H * Δx = -J.T * r
     // H只是半正定，直接求逆的结果是错误的，这里为了使其正定，在对角线添加元素
-    // 查Eigen病态矩阵判断及求逆 ： https://blog.csdn.net/tuntunmmd/article/details/104898610
     // 矩阵病态问题和条件数： https://blog.csdn.net/LVXIAO2897/article/details/102443382
     Eigen::Matrix<double, 33, 33> H = J.transpose() * J;
-    std::cout<<"H.cond = "<< H.colPivHouseholderQr().absDeterminant() / H.diagonal().prod() <<std::endl;
-	Eigen::Matrix<double, 33, 33> lambdaMatrix = Eigen::Matrix<double, 33, 33>::Identity();
+    // 计算条件数: https://stackoverflow.com/questions/33575478/how-can-you-find-the-condition-number-in-eigen
+    Eigen::JacobiSVD<Eigen::MatrixXd> svd(H);
+    double cond_H = svd.singularValues()[0] / svd.singularValues().tail(1)[0];
+    std::cout<<"cond_H = "<< cond_H <<std::endl;
+    if(cond_H > 1e6){
+        std::cout<<"cond_H is big, H matrix is ill!\n";
+    }
+    Eigen::Matrix<double, 33, 33> lambdaMatrix = Eigen::Matrix<double, 33, 33>::Identity();
     H += lambdaMatrix;
-    std::cout<<"(H+I).cond = "<< H.colPivHouseholderQr().absDeterminant() / H.diagonal().prod() <<std::endl;
+    Eigen::JacobiSVD<Eigen::MatrixXd> svd2(H);
+    double cond_H_plus_I = svd2.singularValues()[0] / svd2.singularValues().tail(1)[0];
+    std::cout<<"(H+I).cond = "<< cond_H_plus_I <<std::endl;
+    if(cond_H_plus_I > 1e6){
+        std::cout<<"cond_H is big, cond_H_plus_I matrix is ill!\n";
+    }
 
     Eigen::Matrix<double, 33, 1> b = -J.transpose() * e;
     Eigen::Matrix<double, 33, 1> delta = H.inverse() * b;
@@ -85,17 +95,17 @@ int main(){
     // 对B进行边缘化，左乘形成上三角矩阵
     // | I          0 |   | A  B |   | A  B |
     // | -C*A.inv   I | * | C  D | = | 0  ΔA| ==> ΔA = -C*A.inv*B + D
-	// 对C进行边缘化，右乘形成下三角矩阵
+    // 对C进行边缘化，右乘形成下三角矩阵
     // | A  B |   | I  -A.inv*B |   | A  0 |
     // | C  D | * | 0       I   | = | C  ΔA| = H' ==> 用来求pose
     // 可以得到:
     // | I        0 |   | A  B |   | I  -A.inv*B |   | A  0 |
     // |-C*A.inv  I | * | C  D | * | 0      I    | = | 0  ΔA| = H'
-	
-	// 自己可以构建舒尔补，左乘形成下三角矩阵，先求解pose增量，再求解point增量
-	// | I  -B*D.inv |   | A  B |   | A-B*D.inv*C  0 |
-	// | 0     I     | * | C  D | = |    C         D |
-	// H -= lambdaMatrix;
+    
+    // 自己可以构建舒尔补，左乘形成下三角矩阵，先求解pose增量，再求解point增量
+    // | I  -B*D.inv |   | A  B |   | A-B*D.inv*C  0 |
+    // | 0     I     | * | C  D | = |    C         D |
+    // H -= lambdaMatrix;
     Eigen::Matrix<double, 6, 6> A = H.block<6, 6>(0, 0);
     Eigen::Matrix<double, 6, 27> B = H.block<6, 27>(0, 6);
     Eigen::Matrix<double, 27, 6> C = H.block<27, 6>(6, 0);
@@ -107,21 +117,21 @@ int main(){
     leftMatrix.setIdentity();
     leftMatrix.block<6, 27>(0, 6) = E;
 
-	// 求pose增量
-	Eigen::Matrix<double, 6, 6> deltaA = A + E * C;
-	Eigen::Matrix<double, 6, 1> deltaX_pose = deltaA.inverse() * (leftMatrix * b).head(6);
-	std::cout<<"deltaPose diff:\n"<<(deltaX_pose - delta.head(6)).transpose().cast<int>()<<std::endl;
+    // 求pose增量
+    Eigen::Matrix<double, 6, 6> deltaA = A + E * C;
+    Eigen::Matrix<double, 6, 1> deltaX_pose = deltaA.inverse() * (leftMatrix * b).head(6);
+    std::cout<<"deltaPose diff:\n"<<(deltaX_pose - delta.head(6)).transpose().cast<int>()<<std::endl;
     // 求point增量
     // H * Δx = b ==> C*deltaX_pose + D*deltaX_point = b
-	// D*deltaX_point = b - C*deltaX_pose
-	// deltaX_point = D.inv * (b - C*deltaX_pose)
-	// D是对角块矩阵，可以分块求逆
-	Eigen::Matrix<double, 27, 27> D_inv;
-	D_inv.setZero();
-	for(int i=0; i<D_inv.rows()/3; ++i){
-		D_inv.block<3, 3>(i*3, i*3) = D.block<3, 3>(i*3, i*3).inverse();
-	}
-	Eigen::Matrix<double, 27, 1> deltaX_point = D_inv * (b.tail(27) - C*deltaX_pose);
+    // D*deltaX_point = b - C*deltaX_pose
+    // deltaX_point = D.inv * (b - C*deltaX_pose)
+    // D是对角块矩阵，可以分块求逆
+    Eigen::Matrix<double, 27, 27> D_inv;
+    D_inv.setZero();
+    for(int i=0; i<D_inv.rows()/3; ++i){
+        D_inv.block<3, 3>(i*3, i*3) = D.block<3, 3>(i*3, i*3).inverse();
+    }
+    Eigen::Matrix<double, 27, 1> deltaX_point = D_inv * (b.tail(27) - C*deltaX_pose);
     std::cout<<"deltaPointX diff:\n"<<(deltaX_point - delta.tail(27)).transpose().cast<int>()<<std::endl;
 
     return 0;
