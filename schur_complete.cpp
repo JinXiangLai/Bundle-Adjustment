@@ -121,6 +121,20 @@ int main(){
     Eigen::Matrix<double, 6, 6> deltaA = A + E * C;
     Eigen::Matrix<double, 6, 1> deltaX_pose = deltaA.inverse() * (leftMatrix * b).head(6);
     std::cout<<"deltaPose diff:\n"<<(deltaX_pose - delta.head(6)).transpose().cast<int>()<<std::endl;
+
+	/*************
+	* https://blog.csdn.net/weixin_42098782/article/details/105579397
+	* VINS-MONO边缘化操作：https://blog.csdn.net/weixin_41394379/article/details/89975386
+	* 边缘化point后，得到的公式是： deltaA * deltaX_pose = (leftMatrix * b).head(6)
+	* 令 Λ_p = deltaA, b_p = (leftMatrix * b).head(6), 为了构建先验约束，需要从 Λ_p、b_p
+	* 反解出残差e_p、雅可比矩阵J_p, 原始的关系为 H_p * Δx = -J_p.T * e_p
+	* 此刻求解出来的 X_pose是融合了先验信息，记为X_pose_0，那么，当下次更新 X_pose后，
+	* 注意，先验残差 e_p也是X_pose的函数，因此，先验残差e_p是一直更新的变量：
+	* e_p = e_0 + J_l * (X_pose_new - X_pose_0)[一阶泰勒展开]
+	* J_l由H_p进行SVD分解求得，因此是固定的，至此，知道了error的计算公式、雅可比J_l
+	* EdgePrior我们就可以构建出来了
+	*************/
+
     // 求point增量
     // H * Δx = b ==> C*deltaX_pose + D*deltaX_point = b
     // D*deltaX_point = b - C*deltaX_pose
