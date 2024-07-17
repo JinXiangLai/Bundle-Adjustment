@@ -12,6 +12,7 @@
 #include <g2o/core/robust_kernel_impl.h>
 
 #include "g2oTypes.hpp"
+//
 
 typedef Eigen::Matrix<double, 3, 3>  Matrix3d;
 #define USE_INVERSE_DEPTH 1
